@@ -26,8 +26,7 @@ function PrintHelp() {
     echo " -a --aws-key-file  The file for the .csv access key file for an AWS administrator. Required. The AWS administrator must"
     echo "                    have the rights to list and update credentials for the IAM user. The script expects the .csv format "
     echo "                    used when you dowload the key from IAM in the AWS console."
-    echo " -s --s3-test-file  Specifies a test text file stored in S3 used for testing. Required. The IAM user must have "
-    echo "                    GET access to this file."
+    echo " -p --profile-aws-credentials  Specifies an aws profile from credentials file. Required."
     echo " -c --csv-key-file  The name of the output .csv file containing the new access key information. Optional."
     echo " -u --user          The IAM user whose key you want to rotate. Required."
     echo " -j --json          A file to send JSON output to. Optional."
@@ -57,8 +56,8 @@ __base="$(basename ${__file} .sh)"
 
 IAM_USER=
 AWS_KEY_FILE=
+PROFILE_AWS_CREDENTIALS=
 JSON_OUTPUT_FILE=
-S3_TEST_FILE=
 CSV_OUTPUT_FILE=
 
 # Check if any arguments were passed. If not, print an error
@@ -75,11 +74,8 @@ while [ "$1" != "" ]; do
         -u | --user)  shift
                       IAM_USER="$1"
                       ;;
-        -a | --aws-key-file) shift
-                      AWS_KEY_FILE="$1"
-                      ;;
-        -s | --s3-test-file)  shift
-                      S3_TEST_FILE="$1"
+        -p | --profile-aws-credentials)  shift
+                      PROFILE_AWS_CREDENTIALS="$1"
                       ;;
         -j | --json)  shift
                       JSON_OUTPUT_FILE="$1"
@@ -101,38 +97,26 @@ while [ "$1" != "" ]; do
 done
 
 # Make sure that all the required arguments were passed into the script
-if [[ -z "$IAM_USER" ]] || [[ -z "$AWS_KEY_FILE" ]] || [[ -z "$S3_TEST_FILE" ]]; then
+if [[ -z "$IAM_USER" ]] || [[ -z "$PROFILE_AWS_CREDENTIALS" ]]; then
     >&2 echo "error: too few arguments"
     PrintHelp
     exit 0
 fi
 
-function ConfigureAwsCli() {
-# Configure the AWS command-line tool with the proper credentials
-
-    if [[ ! -z "$AWS_KEY_FILE" ]] ; then
-        echo "Using the AWS administrator key file specified."
-
-        AWS_ACCESS_KEY_ID=$(awk -F ',' 'NR==2 {print $2}' "$AWS_KEY_FILE")
-        AWS_SECRET_ACCESS_KEY=$(awk -F ',' 'NR==2 {print $3}' "$AWS_KEY_FILE")
-
-        # Configure temp profile
-        aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
-        aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
-    fi
-
-}
 
 # ======================================================
 # === MAIN SCRIPT
 # ======================================================
 
-
-ConfigureAwsCli
+# not necessary, cause the rights are already set up, per profile
+# ConfigureAwsCli
 
 # Get the keys for this user and check how many there are. If there are two or more, than stop. The max # of keys
 # per IAM user is 2. We need a second key as a temporary key to rotate. So, if there are already two keys, we can't continue.
 cd "$__dir"
+
+# set the profile
+export AWS_PROFILE=$PROFILE_AWS_CREDENTIALS
 
 echo "Verifying the IAM user only has one key currently..."
 aws iam list-access-keys --user-name "$IAM_USER" > existing-keys
@@ -145,15 +129,18 @@ if [ "$NUM_OF_KEYS" -gt 1 ] ; then
 fi
 
 # Get the existing key
-EXISTING_KEY_ID=$(awk '/.AccessKeyId./{print substr($2,2,length($2)-2)}' existing-keys) 
+# EXISTING_KEY_ID=$(awk '/.AccessKeyId./{print substr($2,2,length($2)-2)}' existing-keys) 
+# Get the existing key by profile
+EXISTING_KEY_ID=$(python3 getSecretKeyByProfile.py --aws_profile_name $PROFILE_AWS_CREDENTIALS | jq --raw-output ".aws_access_key_id")
+
 echo "Existing key Id: $EXISTING_KEY_ID"
 rm existing-keys
 
 # Create a new access key in AWS for the IAM user
 echo "Creating new access key for IAM user..."
 aws iam create-access-key --user-name "$IAM_USER" > temp-key
-NEW_AWS_ACCESS_KEY_ID=$(awk '/.AccessKeyId./{print substr($2,2,length($2)-2)}' temp-key)
-NEW_AWS_SECRET_ACCESS_KEY=$(awk '/.SecretAccessKey./{print substr($2,2,length($2)-3)}' temp-key)
+NEW_AWS_ACCESS_KEY_ID=$(cat temp-key | jq --raw-output .AccessKey.AccessKeyId)
+NEW_AWS_SECRET_ACCESS_KEY=$(cat temp-key | jq --raw-output .AccessKey.SecretAccessKey)
 rm temp-key
 
 #######
@@ -179,7 +166,7 @@ MAX_COUNT=20
 SUCCESS=false
 while [ "$SUCCESS" = false ] && [ "$COUNT" -lt "$MAX_COUNT" ]; do
     sleep 3
-    aws s3 cp --profile temp-role "$S3_TEST_FILE" ./KeyRotationTest.txt  && RETURN_CODE=$? || RETURN_CODE=$?
+    aws s3 ls && RETURN_CODE=$? || RETURN_CODE=$?
     if [ "$RETURN_CODE" -eq 0 ]; then
         SUCCESS=true
     else
@@ -188,7 +175,6 @@ while [ "$SUCCESS" = false ] && [ "$COUNT" -lt "$MAX_COUNT" ]; do
 done
 
 echo "done pausing.."
-rm KeyRotationTest.txt
 
 #
 #  End Key testing
@@ -202,8 +188,7 @@ if [ "$SUCCESS" = true ]; then
  
   # Disable the old key, and re-try the test. 
   aws iam update-access-key  --user-name "$IAM_USER" --access-key-id "$EXISTING_KEY_ID" --status Inactive
-  aws s3 cp --profile temp-role "$S3_TEST_FILE" ./KeyRotationTest.txt && RETURN_CODE=$? || RETURN_CODE=$?
-  rm KeyRotationTest.txt
+  aws s3 ls && RETURN_CODE=$? || RETURN_CODE=$?
 
   if [ "$RETURN_CODE" -eq 0 ]; then SUCCESS=true; else SUCCESS=false; fi
 
@@ -221,6 +206,11 @@ else
   aws iam delete-access-key  --user-name "$IAM_USER"  --access-key-id "$NEW_AWS_ACCESS_KEY_ID"
   exit 7
 fi
+
+
+#
+# TODO: write the NewAwsAccessKeyId directly into the .credentials
+#
 
 # Print the JSON file if requested
 if [[ ! -z "$JSON_OUTPUT_FILE" ]]; then
@@ -240,3 +230,6 @@ if [[ ! -z "$CSV_OUTPUT_FILE" ]]; then
         "$IAM_USER" "$NEW_AWS_ACCESS_KEY_ID" "$NEW_AWS_SECRET_ACCESS_KEY" > "$CSV_OUTPUT_FILE"
 fi
 
+# write back to the profile
+aws configure set aws_access_key_id "$NEW_AWS_ACCESS_KEY_ID" --profile $PROFILE_AWS_CREDENTIALS
+aws configure set aws_secret_access_key "$NEW_AWS_SECRET_ACCESS_KEY" --profile $PROFILE_AWS_CREDENTIALS
