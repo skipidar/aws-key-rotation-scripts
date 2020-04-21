@@ -27,4 +27,17 @@ Set "awsCredentialProfiles" in rotate-all-profiles.sh
 
 ## rotate keys for all profiles
 
+	Store in environment variable your IAM user
+	`AWS_IAMUSER_TO_ROTATE="your.iam.user@mail.com"`
+	
+	Store in environment variable your named AWS profiles for rotation
+	`AWS_PROFILES_TO_ROTATE="profiledev,profiletest"`
+
     bash rotate-all-profiles.sh
+	
+## rotate keys for all profiles and backup the credentials file
+
+	Store in environment variable your named AWS profiles for rotation
+	`AWSCR_BACKUP_FOLDER_PATH="/d/backups/.aws/"`
+
+	bash rotate-all-profiles-backupcreds.sh
