@@ -12,12 +12,7 @@ In each IAM account - there should be only 1 IAM key.
 ## Install python dependencies
 
     pip install -r requirements.py.txt
-
-## update rotate-all-profiles.sh
-Set <YOUR_IAM_USER> in rotate-all-profiles.sh
-
-Set "awsCredentialProfiles" in rotate-all-profiles.sh
-
+ 
 
 
 ## rotate one specific IAM key for specific profile
